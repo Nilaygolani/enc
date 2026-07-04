@@ -40,7 +40,8 @@ def open_meesho_seller(username, password):
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
-    options.binary_location = "/usr/bin/google-chrome" 
+    
+    # Custom paths hata diye hain taaki Selenium Manager automatic detect kare
     options.add_experimental_option("prefs", chrome_prefs)
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
@@ -48,8 +49,8 @@ def open_meesho_seller(username, password):
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
     try:
-        service = Service("/usr/bin/chromedriver")
-        driver = webdriver.Chrome(service=service, options=options)
+        # Bina kisi hardcoded path ke driver initiate kar rahe hain
+        driver = webdriver.Chrome(options=options)
         
         driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
             "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
@@ -167,7 +168,7 @@ def open_meesho_seller(username, password):
         log_message(f"[X] Error aaya: {str(e)}")
         return {"status": "error", "message": str(e)}
 
-# Frontend User Interface (HTML, CSS & Live JavaScript Log Sync)
+# Frontend User Interface
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
@@ -208,17 +209,14 @@ HTML_TEMPLATE = """
             const pass = document.getElementById("password").value;
             if(!user || !pass) { alert("Please enter both credentials!"); return; }
 
-            // UI Changes
             document.getElementById("start-btn").disabled = true;
             document.getElementById("start-btn").innerText = "Processing System...";
             const term = document.getElementById("terminal");
             term.style.display = "block";
             term.innerHTML = "<div class='log-line'>[+] System initializing... Please wait...</div>";
 
-            // Logs poll karna shuru karein har 1.5 second me
             logInterval = setInterval(fetchLogs, 1500);
 
-            // Backend execution trigger karein
             fetch('/run-automation', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -227,7 +225,7 @@ HTML_TEMPLATE = """
             .then(res => res.json())
             .then(data => {
                 clearInterval(logInterval);
-                fetchLogs(); // Final log fetch
+                fetchLogs(); 
                 document.getElementById("start-btn").innerText = "System Executed";
                 
                 if(data.status === "success") {
@@ -235,10 +233,9 @@ HTML_TEMPLATE = """
                     const dlLink = document.getElementById("dl-link");
                     dlLink.href = "/download-file/" + data.file;
                     dlArea.style.display = "block";
-                    // Auto download trigger karein
                     window.location.href = "/download-file/" + data.file;
                 } else {
-                    alert("System stopped or No file downloaded. Check logs.");
+                    alert("System stopped or error occured. Check terminal logs.");
                 }
             })
             .catch(err => {
@@ -256,7 +253,7 @@ HTML_TEMPLATE = """
                 logs.forEach(log => {
                     term.innerHTML += `<div class='log-line'>${log}</div>`;
                 });
-                term.scrollTop = term.scrollHeight; // Auto scroll down
+                term.scrollTop = term.scrollHeight;
             });
         }
     </script>
