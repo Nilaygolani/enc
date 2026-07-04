@@ -40,7 +40,9 @@ def open_meesho_seller_thread(username, password):
     }
 
     options = webdriver.ChromeOptions()
-    options.binary_location = "/usr/bin/google-chrome" # Docker fixed path
+    # Docker binaries ki explicit locations
+    options.binary_location = "/usr/bin/google-chrome"
+    
     options.add_argument("--headless=new")  
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
@@ -53,7 +55,10 @@ def open_meesho_seller_thread(username, password):
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
     try:
-        driver = webdriver.Chrome(options=options)
+        # Docker default ChromeDriver service configuration
+        service = Service(executable_path="/usr/bin/chromedriver")
+        driver = webdriver.Chrome(service=service, options=options)
+        
         driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
             "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
         })
@@ -76,7 +81,7 @@ def open_meesho_seller_thread(username, password):
         driver.find_element(By.XPATH, "//button[@type='submit']").click()
         log_message("[====== SUCCESS ======>] Login button click ho gaya hai.")
         
-        time.sleep(10)
+        time.sleep(10) # Login loading wait
 
         checkbox_xpaths = ["//thead//input[@type='checkbox']", "//th//input[@type='checkbox']", "//input[@type='checkbox']"]
 
@@ -144,7 +149,7 @@ def open_meesho_seller_thread(username, password):
                     driver.execute_script("arguments[0].click();", download_btn)
                     download_clicked = True
                     log_message("[====== SUCCESS ======>] Saare naye labels download ho rahe hain!")
-                    time.sleep(8)  
+                    time.sleep(10)  # Downloading buffer time
                     break
                 except: continue
                 
@@ -213,7 +218,6 @@ HTML_TEMPLATE = """
             document.getElementById("start-btn").innerText = "Processing System...";
             document.getElementById("terminal").style.display = "block";
 
-            // Async hit karenge backend ko
             fetch('/run-automation', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -221,7 +225,6 @@ HTML_TEMPLATE = """
             })
             .then(res => res.json())
             .then(data => {
-                // Logs aur status check karna shuru
                 statusInterval = setInterval(checkStatus, 1500);
             })
             .catch(err => {
@@ -230,7 +233,6 @@ HTML_TEMPLATE = """
         }
 
         function checkStatus() {
-            // Logs sync
             fetch('/get-logs')
             .then(res => res.json())
             .then(data => {
@@ -241,7 +243,6 @@ HTML_TEMPLATE = """
                 });
                 term.scrollTop = term.scrollHeight;
 
-                // Status logic check
                 if (data.status === "completed") {
                     clearInterval(statusInterval);
                     document.getElementById("start-btn").innerText = "Completed!";
@@ -253,7 +254,7 @@ HTML_TEMPLATE = """
                     clearInterval(statusInterval);
                     document.getElementById("start-btn").disabled = false;
                     document.getElementById("start-btn").innerText = "Start Automation System";
-                    alert("Automation stopped or error occurred. Check logs.");
+                    alert("Automation stopped or error occurred. Check terminal logs.");
                 }
             });
         }
@@ -280,7 +281,6 @@ def run_bot():
     username = data.get("username")
     password = data.get("password")
     
-    # Threading use kar rahe hain taaki backend bina rukawat background me chalta rahe
     t = threading.Thread(target=open_meesho_seller_thread, args=(username, password))
     t.start()
     
