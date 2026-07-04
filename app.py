@@ -68,7 +68,7 @@ if __name__ == '__main__':
     """
 
 
-    import os
+import os
 from flask import Flask, render_template_string
 
 app = Flask(__name__)
