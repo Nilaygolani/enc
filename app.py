@@ -1,18 +1,33 @@
 import os
 import time
-from flask import Flask, request, jsonify, render_template_string
+import shutil
+from flask import Flask, request, jsonify, render_template_string, Response, send_from_directory
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-import traceback
 
 app = Flask(__name__)
 
+# Logs ko globally store karne ke liye list
+execution_logs = []
+
+def log_message(message):
+    print(message)
+    execution_logs.append(message)
+
 def open_meesho_seller(username, password):
-    print("\n[+] Supplier Browser open ho raha hai...")
-    download_dir = "/tmp"
+    global execution_logs
+    execution_logs.clear()  # Purane logs saaf karein
+    
+    log_message("[+] Supplier Browser (Headless Mode) open ho raha hai...")
+    
+    download_dir = "/tmp/meesho_downloads"
+    if os.path.exists(download_dir):
+        shutil.rmtree(download_dir)
+    os.makedirs(download_dir)
+
     chrome_prefs = {
         "download.default_directory": download_dir,
         "download.prompt_for_download": False,
@@ -21,12 +36,11 @@ def open_meesho_seller(username, password):
     }
 
     options = webdriver.ChromeOptions()
-    options.add_argument("--headless=new")  # Render par background me chalane ke liye zaroori hai
+    options.add_argument("--headless=new")  
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
     options.binary_location = "/usr/bin/google-chrome" 
-    
     options.add_experimental_option("prefs", chrome_prefs)
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
@@ -42,9 +56,11 @@ def open_meesho_seller(username, password):
         })
 
         # ================= STEP 1: LOGIN =================
+        log_message("[+] Meesho Seller portal par jaa rahe hain...")
         driver.get("https://supplier.meesho.com/panel/v3/new/root/login")
         wait = WebDriverWait(driver, 15)
 
+        log_message("[+] Credentials fill kiye jaa rahe hain...")
         email_field = wait.until(EC.element_to_be_clickable((By.XPATH, "//input[@type='text' or @name='email_or_phone']")))
         email_field.clear()
         email_field.send_keys(username)
@@ -55,14 +71,18 @@ def open_meesho_seller(username, password):
 
         time.sleep(1)
         driver.find_element(By.XPATH, "//button[@type='submit']").click()
-        time.sleep(10)  # Waiting for login / OTP bypass if any
+        log_message("[====== SUCCESS ======>] Login button click ho gaya hai.")
+        
+        time.sleep(10)  # Login hone ka wait
 
         checkbox_xpaths = ["//thead//input[@type='checkbox']", "//th//input[@type='checkbox']", "//input[@type='checkbox']"]
 
         # ================= STEP 2: PENDING ORDERS =================
+        log_message("[+] Direct Pending link par jaa rahe hain...")
         driver.get("https://supplier.meesho.com/panel/v3/new/fulfillment/z7l5i/orders/pending")
         time.sleep(6)
 
+        log_message("[+] Pending orders check aur select kar rahe hain...")
         select_all_pending = None
         for xpath in checkbox_xpaths:
             try:
@@ -73,21 +93,33 @@ def open_meesho_seller(username, password):
         if select_all_pending:
             if not select_all_pending.is_selected():
                 driver.execute_script("arguments[0].click();", select_all_pending)
+                log_message("[+] Sabhi pending orders ko select kar liya gaya hai.")
             time.sleep(2)
 
-            accept_btn_xpaths = ["//button[contains(., 'Accept Selected')]", "//button[contains(., 'Accept Order')]"]
+            accept_btn_xpaths = ["//button[contains(., 'Accept Selected')]", "//*[contains(text(), 'Accept') or contains(text(), 'Ready to Ship')]"]
+            accept_clicked = False
             for btn_xpath in accept_btn_xpaths:
                 try:
                     accept_btn = driver.find_element(By.XPATH, btn_xpath)
                     driver.execute_script("arguments[0].click();", accept_btn)
+                    accept_clicked = True
                     break
                 except: continue
-            time.sleep(8)
+            
+            if accept_clicked:
+                log_message("[=>] Sabhi pending orders bulk me Accept ho gaye!")
+                time.sleep(8)
+            else:
+                log_message("[-] Bulk Accept button nahi mila.")
+        else:
+            log_message("[💡 INFO] Koi bhi pending order nahi mila.")
 
         # ================= STEP 3: READY TO SHIP (DOWNLOAD) =================
+        log_message("[+] Direct Ready to Ship link par jaa rahe hain...")
         driver.get("https://supplier.meesho.com/panel/v3/new/fulfillment/z7l5i/orders/ready-to-ship")
         time.sleep(6)
 
+        log_message("[+] Un-downloaded labels ko select kar rahe hain...")
         select_all_rts = None
         for rts_xpath in checkbox_xpaths:
             try:
@@ -98,74 +130,163 @@ def open_meesho_seller(username, password):
         if select_all_rts:
             if not select_all_rts.is_selected():
                 driver.execute_script("arguments[0].click();", select_all_rts)
+                log_message("[+] Saare RTS orders select ho gaye.")
             time.sleep(2)
 
             download_btn_xpaths = ["//button[contains(., 'Download Selected Labels')]", "//button[contains(., 'Download')]"]
+            download_clicked = False
             for btn_xpath in download_btn_xpaths:
                 try:
                     download_btn = driver.find_element(By.XPATH, btn_xpath)
                     driver.execute_script("arguments[0].click();", download_btn)
-                    time.sleep(5)
+                    download_clicked = True
+                    log_message("[====== SUCCESS ======>] Saare naye labels download ho rahe hain!")
+                    time.sleep(8)  # Download hone ka samay dein
                     break
                 except: continue
+                
+            if not download_clicked:
+                log_message("[-] Bulk Download button nahi mil paya.")
+        else:
+            log_message("[💡 INFO] RTS section me koi pending label nahi mila.")
         
         driver.quit()
-        return "Automation completed successfully! Labels processed."
+
+        # Check karein agar koi file download hui hai
+        files = os.listdir(download_dir)
+        if files:
+            log_message(f"[🎉 FINISHED] Download completed! File name: {files[0]}")
+            return {"status": "success", "file": files[0]}
+        else:
+            log_message("[⚠️ FINISHED] Process complete, par koi file download nahi hui.")
+            return {"status": "no_file", "message": "No files downloaded"}
 
     except Exception as e:
         if 'driver' in locals():
             driver.quit()
-        return f"Error occurred: {str(e)}"
+        log_message(f"[X] Error aaya: {str(e)}")
+        return {"status": "error", "message": str(e)}
 
-# Frontend UI (Login Form) jo Render link par dikhega
+# Frontend User Interface (HTML, CSS & Live JavaScript Log Sync)
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
 <head>
     <title>Meesho Automation Hub</title>
     <style>
-        body { font-family: Arial, sans-serif; background-color: #f4f7f6; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
-        .login-container { background: white; padding: 30px; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); width: 100%; max-width: 400px; text-align: center; }
-        h2 { color: #ff2e63; margin-bottom: 20px; }
-        input[type="text"], input[type="password"] { width: 100%; padding: 12px; margin: 10px 0; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; }
-        button { width: 100%; padding: 12px; background-color: #ff2e63; color: white; border: none; border-radius: 4px; font-size: 16px; cursor: pointer; font-weight: bold; }
-        button:hover { background-color: #e02454; }
-        .info { font-size: 12px; color: #666; margin-top: 15px; }
+        body { font-family: 'Segoe UI', Arial, sans-serif; background-color: #1a1a2e; color: #fff; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
+        .container { background: #162447; padding: 30px; border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.3); width: 100%; max-width: 500px; text-align: center; }
+        h2 { color: #e43f5a; margin-bottom: 20px; font-weight: 600; }
+        input { width: 100%; padding: 12px; margin: 10px 0; border: 1px solid #1f4068; background: #1f4068; color: white; border-radius: 6px; box-sizing: border-box; font-size: 14px; }
+        input::placeholder { color: #b5b5b5; }
+        button { width: 100%; padding: 14px; background-color: #e43f5a; color: white; border: none; border-radius: 6px; font-size: 16px; cursor: pointer; font-weight: bold; margin-top: 15px; transition: 0.3s; }
+        button:hover { background-color: #ca3e53; }
+        #terminal { background: #0f172a; border: 1px solid #1e293b; border-radius: 6px; padding: 15px; margin-top: 20px; height: 180px; overflow-y: auto; text-align: left; font-family: 'Courier New', monospace; font-size: 13px; color: #38bdf8; display: none; }
+        .log-line { margin-bottom: 6px; border-left: 3px solid #e43f5a; padding-left: 8px; }
+        #download-area { display: none; margin-top: 20px; padding: 15px; background: #10b981; color: white; border-radius: 6px; font-weight: bold; }
+        #download-area a { color: white; text-decoration: underline; }
     </style>
 </head>
 <body>
-    <div class="login-container">
+    <div class="container">
         <h2>Meesho Automation Bot</h2>
-        <form action="/run-automation" method="POST">
-            <input type="text" name="username" placeholder="Enter Email or Phone Number" required>
-            <input type="password" name="password" placeholder="Enter Meesho Password" required>
-            <button type="submit">Start Automation</button>
-        </form>
-        <p class="info">Note: Click karne ke baad background me processing start ho jayegi.</p>
+        <div id="form-panel">
+            <input type="text" id="username" placeholder="Enter Email or Phone Number" required>
+            <input type="password" id="password" placeholder="Enter Meesho Password" required>
+            <button id="start-btn" onclick="startAutomation()">Start Automation System</button>
+        </div>
+
+        <div id="terminal"></div>
+        <div id="download-area">🎉 Setup Completed! <a id="dl-link" href="#" target="_blank">Click here to Download Labels PDF</a></div>
     </div>
+
+    <script>
+        let logInterval;
+
+        function startAutomation() {
+            const user = document.getElementById("username").value;
+            const pass = document.getElementById("password").value;
+            if(!user || !pass) { alert("Please enter both credentials!"); return; }
+
+            // UI Changes
+            document.getElementById("start-btn").disabled = true;
+            document.getElementById("start-btn").innerText = "Processing System...";
+            const term = document.getElementById("terminal");
+            term.style.display = "block";
+            term.innerHTML = "<div class='log-line'>[+] System initializing... Please wait...</div>";
+
+            // Logs poll karna shuru karein har 1.5 second me
+            logInterval = setInterval(fetchLogs, 1500);
+
+            // Backend execution trigger karein
+            fetch('/run-automation', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username: user, password: pass })
+            })
+            .then(res => res.json())
+            .then(data => {
+                clearInterval(logInterval);
+                fetchLogs(); // Final log fetch
+                document.getElementById("start-btn").innerText = "System Executed";
+                
+                if(data.status === "success") {
+                    const dlArea = document.getElementById("download-area");
+                    const dlLink = document.getElementById("dl-link");
+                    dlLink.href = "/download-file/" + data.file;
+                    dlArea.style.display = "block";
+                    // Auto download trigger karein
+                    window.location.href = "/download-file/" + data.file;
+                } else {
+                    alert("System stopped or No file downloaded. Check logs.");
+                }
+            })
+            .catch(err => {
+                clearInterval(logInterval);
+                alert("Connection Error!");
+            });
+        }
+
+        function fetchLogs() {
+            fetch('/get-logs')
+            .then(res => res.json())
+            .then(logs => {
+                const term = document.getElementById("terminal");
+                term.innerHTML = "";
+                logs.forEach(log => {
+                    term.innerHTML += `<div class='log-line'>${log}</div>`;
+                });
+                term.scrollTop = term.scrollHeight; // Auto scroll down
+            });
+        }
+    </script>
 </body>
 </html>
 """
 
 @app.route('/')
 def home():
-    # Jab aap link par click karenge toh yeh HTML Form dikhega
     return render_template_string(HTML_TEMPLATE)
+
+@app.route('/get-logs')
+def get_logs():
+    return jsonify(execution_logs)
 
 @app.route('/run-automation', methods=['POST'])
 def run_bot():
-    username = request.form.get("username")
-    password = request.form.get("password")
+    data = request.get_json() or {}
+    username = data.get("username")
+    password = data.get("password")
     
     if not username or not password:
-        return "<h3>Error: Username or Password cannot be empty!</h3><a href='/'>Go Back</a>"
+        return jsonify({"status": "error", "message": "Empty Credentials"})
         
-    # Automation trigger hoga
     result = open_meesho_seller(username, password)
-    
-    if "Error" in result:
-        return f"<h3>Automation Failed!</h3><p>{result}</p><a href='/'>Try Again</a>"
-    return f"<h3>Success!</h3><p>{result}</p><a href='/'>Go Back</a>"
+    return jsonify(result)
+
+@app.route('/download-file/<filename>')
+def download_file(filename):
+    return send_from_directory("/tmp/meesho_downloads", filename, as_attachment=True)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
