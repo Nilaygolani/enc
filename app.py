@@ -1,7 +1,8 @@
 import os
 import time
 import shutil
-from flask import Flask, request, jsonify, render_template_string, Response, send_from_directory
+import threading
+from flask import Flask, request, jsonify, render_template_string, send_from_directory
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
@@ -10,16 +11,19 @@ from selenium.webdriver.support import expected_conditions as EC
 
 app = Flask(__name__)
 
-# Logs ko globally store karne ke liye list
 execution_logs = []
+bot_status = "idle"  # idle, running, completed, failed
+downloaded_filename = None
 
 def log_message(message):
     print(message)
     execution_logs.append(message)
 
-def open_meesho_seller(username, password):
-    global execution_logs
-    execution_logs.clear()  # Purane logs saaf karein
+def open_meesho_seller_thread(username, password):
+    global execution_logs, bot_status, downloaded_filename
+    bot_status = "running"
+    downloaded_filename = None
+    execution_logs.clear()
     
     log_message("[+] Supplier Browser (Headless Mode) open ho raha hai...")
     
@@ -36,12 +40,12 @@ def open_meesho_seller(username, password):
     }
 
     options = webdriver.ChromeOptions()
+    options.binary_location = "/usr/bin/google-chrome" # Docker fixed path
     options.add_argument("--headless=new")  
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
     
-    # Custom paths hata diye hain taaki Selenium Manager automatic detect kare
     options.add_experimental_option("prefs", chrome_prefs)
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
@@ -49,9 +53,7 @@ def open_meesho_seller(username, password):
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
     try:
-        # Bina kisi hardcoded path ke driver initiate kar rahe hain
         driver = webdriver.Chrome(options=options)
-        
         driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
             "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
         })
@@ -74,7 +76,7 @@ def open_meesho_seller(username, password):
         driver.find_element(By.XPATH, "//button[@type='submit']").click()
         log_message("[====== SUCCESS ======>] Login button click ho gaya hai.")
         
-        time.sleep(10)  # Login hone ka wait
+        time.sleep(10)
 
         checkbox_xpaths = ["//thead//input[@type='checkbox']", "//th//input[@type='checkbox']", "//input[@type='checkbox']"]
 
@@ -142,7 +144,7 @@ def open_meesho_seller(username, password):
                     driver.execute_script("arguments[0].click();", download_btn)
                     download_clicked = True
                     log_message("[====== SUCCESS ======>] Saare naye labels download ho rahe hain!")
-                    time.sleep(8)  # Download hone ka samay dein
+                    time.sleep(8)  
                     break
                 except: continue
                 
@@ -153,22 +155,21 @@ def open_meesho_seller(username, password):
         
         driver.quit()
 
-        # Check karein agar koi file download hui hai
         files = os.listdir(download_dir)
         if files:
             log_message(f"[🎉 FINISHED] Download completed! File name: {files[0]}")
-            return {"status": "success", "file": files[0]}
+            downloaded_filename = files[0]
+            bot_status = "completed"
         else:
-            log_message("[⚠️ FINISHED] Process complete, par koi file download nahi hui.")
-            return {"status": "no_file", "message": "No files downloaded"}
+            log_message("[⚠️ FINISHED] Process complete, koi file download nahi hui.")
+            bot_status = "no_file"
 
     except Exception as e:
         if 'driver' in locals():
             driver.quit()
         log_message(f"[X] Error aaya: {str(e)}")
-        return {"status": "error", "message": str(e)}
+        bot_status = "failed"
 
-# Frontend User Interface
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
@@ -179,9 +180,8 @@ HTML_TEMPLATE = """
         .container { background: #162447; padding: 30px; border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.3); width: 100%; max-width: 500px; text-align: center; }
         h2 { color: #e43f5a; margin-bottom: 20px; font-weight: 600; }
         input { width: 100%; padding: 12px; margin: 10px 0; border: 1px solid #1f4068; background: #1f4068; color: white; border-radius: 6px; box-sizing: border-box; font-size: 14px; }
-        input::placeholder { color: #b5b5b5; }
         button { width: 100%; padding: 14px; background-color: #e43f5a; color: white; border: none; border-radius: 6px; font-size: 16px; cursor: pointer; font-weight: bold; margin-top: 15px; transition: 0.3s; }
-        button:hover { background-color: #ca3e53; }
+        button:disabled { background-color: #555; cursor: not-allowed; }
         #terminal { background: #0f172a; border: 1px solid #1e293b; border-radius: 6px; padding: 15px; margin-top: 20px; height: 180px; overflow-y: auto; text-align: left; font-family: 'Courier New', monospace; font-size: 13px; color: #38bdf8; display: none; }
         .log-line { margin-bottom: 6px; border-left: 3px solid #e43f5a; padding-left: 8px; }
         #download-area { display: none; margin-top: 20px; padding: 15px; background: #10b981; color: white; border-radius: 6px; font-weight: bold; }
@@ -198,25 +198,22 @@ HTML_TEMPLATE = """
         </div>
 
         <div id="terminal"></div>
-        <div id="download-area">🎉 Setup Completed! <a id="dl-link" href="#" target="_blank">Click here to Download Labels PDF</a></div>
+        <div id="download-area">🎉 Done! <a id="dl-link" href="#" target="_blank">Click here to Download Labels PDF</a></div>
     </div>
 
     <script>
-        let logInterval;
+        let statusInterval;
 
         function startAutomation() {
             const user = document.getElementById("username").value;
             const pass = document.getElementById("password").value;
-            if(!user || !pass) { alert("Please enter both credentials!"); return; }
+            if(!user || !pass) { alert("Please enter credentials!"); return; }
 
             document.getElementById("start-btn").disabled = true;
             document.getElementById("start-btn").innerText = "Processing System...";
-            const term = document.getElementById("terminal");
-            term.style.display = "block";
-            term.innerHTML = "<div class='log-line'>[+] System initializing... Please wait...</div>";
+            document.getElementById("terminal").style.display = "block";
 
-            logInterval = setInterval(fetchLogs, 1500);
-
+            // Async hit karenge backend ko
             fetch('/run-automation', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -224,36 +221,40 @@ HTML_TEMPLATE = """
             })
             .then(res => res.json())
             .then(data => {
-                clearInterval(logInterval);
-                fetchLogs(); 
-                document.getElementById("start-btn").innerText = "System Executed";
-                
-                if(data.status === "success") {
-                    const dlArea = document.getElementById("download-area");
-                    const dlLink = document.getElementById("dl-link");
-                    dlLink.href = "/download-file/" + data.file;
-                    dlArea.style.display = "block";
-                    window.location.href = "/download-file/" + data.file;
-                } else {
-                    alert("System stopped or error occured. Check terminal logs.");
-                }
+                // Logs aur status check karna shuru
+                statusInterval = setInterval(checkStatus, 1500);
             })
             .catch(err => {
-                clearInterval(logInterval);
-                alert("Connection Error!");
+                alert("Trigger Failed!");
             });
         }
 
-        function fetchLogs() {
+        function checkStatus() {
+            // Logs sync
             fetch('/get-logs')
             .then(res => res.json())
-            .then(logs => {
+            .then(data => {
                 const term = document.getElementById("terminal");
                 term.innerHTML = "";
-                logs.forEach(log => {
+                data.logs.forEach(log => {
                     term.innerHTML += `<div class='log-line'>${log}</div>`;
                 });
                 term.scrollTop = term.scrollHeight;
+
+                // Status logic check
+                if (data.status === "completed") {
+                    clearInterval(statusInterval);
+                    document.getElementById("start-btn").innerText = "Completed!";
+                    const dlArea = document.getElementById("download-area");
+                    document.getElementById("dl-link").href = "/download-file/" + data.file;
+                    dlArea.style.display = "block";
+                    window.location.href = "/download-file/" + data.file;
+                } else if (data.status === "failed" || data.status === "no_file") {
+                    clearInterval(statusInterval);
+                    document.getElementById("start-btn").disabled = false;
+                    document.getElementById("start-btn").innerText = "Start Automation System";
+                    alert("Automation stopped or error occurred. Check logs.");
+                }
             });
         }
     </script>
@@ -267,7 +268,11 @@ def home():
 
 @app.route('/get-logs')
 def get_logs():
-    return jsonify(execution_logs)
+    return jsonify({
+        "logs": execution_logs,
+        "status": bot_status,
+        "file": downloaded_filename
+    })
 
 @app.route('/run-automation', methods=['POST'])
 def run_bot():
@@ -275,11 +280,11 @@ def run_bot():
     username = data.get("username")
     password = data.get("password")
     
-    if not username or not password:
-        return jsonify({"status": "error", "message": "Empty Credentials"})
-        
-    result = open_meesho_seller(username, password)
-    return jsonify(result)
+    # Threading use kar rahe hain taaki backend bina rukawat background me chalta rahe
+    t = threading.Thread(target=open_meesho_seller_thread, args=(username, password))
+    t.start()
+    
+    return jsonify({"status": "triggered"})
 
 @app.route('/download-file/<filename>')
 def download_file(filename):
