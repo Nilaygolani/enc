@@ -1,6 +1,6 @@
 import os
 import time
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template_string
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
@@ -12,8 +12,7 @@ app = Flask(__name__)
 
 def open_meesho_seller(username, password):
     print("\n[+] Supplier Browser open ho raha hai...")
-    
-    download_dir = "/tmp"  # Render par sirf /tmp directory me write permission hoti hai
+    download_dir = "/tmp"
     chrome_prefs = {
         "download.default_directory": download_dir,
         "download.prompt_for_download": False,
@@ -22,32 +21,26 @@ def open_meesho_seller(username, password):
     }
 
     options = webdriver.ChromeOptions()
-    # ------ RENDER/HEADLESS SETTINGS ------
-    options.add_argument("--headless=new")  # Background me chalane ke liye compulsory hai
+    options.add_argument("--headless=new")  # Render par background me chalane ke liye zaroori hai
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
-    
-    # Render ke environment paths (Hum baki setup build script me karenge)
     options.binary_location = "/usr/bin/google-chrome" 
     
-    options.add_argument("--start-maximized")
-    options.add_experimental_option("detach", True)
     options.add_experimental_option("prefs", chrome_prefs)
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
-    # Render par ChromeDriverManager ki jagah direct path use karna secure hota hai
-    service = Service("/usr/bin/chromedriver")
-    driver = webdriver.Chrome(service=service, options=options)
-
-    driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-        "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-    })
-
     try:
+        service = Service("/usr/bin/chromedriver")
+        driver = webdriver.Chrome(service=service, options=options)
+        
+        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+            "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        })
+
         # ================= STEP 1: LOGIN =================
         driver.get("https://supplier.meesho.com/panel/v3/new/root/login")
         wait = WebDriverWait(driver, 15)
@@ -62,10 +55,7 @@ def open_meesho_seller(username, password):
 
         time.sleep(1)
         driver.find_element(By.XPATH, "//button[@type='submit']").click()
-        
-        # NOTE: Render headless hai, agar OTP aaya toh ye block ho jayega. 
-        # Isliye Meesho account me OTP/Captcha disabled hona chahiye ya 2FA setup script me handle hona chahiye.
-        time.sleep(10) 
+        time.sleep(10)  # Waiting for login / OTP bypass if any
 
         checkbox_xpaths = ["//thead//input[@type='checkbox']", "//th//input[@type='checkbox']", "//input[@type='checkbox']"]
 
@@ -120,29 +110,63 @@ def open_meesho_seller(username, password):
                 except: continue
         
         driver.quit()
-        return "Automation completed successfully!"
+        return "Automation completed successfully! Labels processed."
 
     except Exception as e:
-        driver.quit()
-        return f"Error: {str(e)}"
+        if 'driver' in locals():
+            driver.quit()
+        return f"Error occurred: {str(e)}"
+
+# Frontend UI (Login Form) jo Render link par dikhega
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Meesho Automation Hub</title>
+    <style>
+        body { font-family: Arial, sans-serif; background-color: #f4f7f6; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .login-container { background: white; padding: 30px; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); width: 100%; max-width: 400px; text-align: center; }
+        h2 { color: #ff2e63; margin-bottom: 20px; }
+        input[type="text"], input[type="password"] { width: 100%; padding: 12px; margin: 10px 0; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; }
+        button { width: 100%; padding: 12px; background-color: #ff2e63; color: white; border: none; border-radius: 4px; font-size: 16px; cursor: pointer; font-weight: bold; }
+        button:hover { background-color: #e02454; }
+        .info { font-size: 12px; color: #666; margin-top: 15px; }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <h2>Meesho Automation Bot</h2>
+        <form action="/run-automation" method="POST">
+            <input type="text" name="username" placeholder="Enter Email or Phone Number" required>
+            <input type="password" name="password" placeholder="Enter Meesho Password" required>
+            <button type="submit">Start Automation</button>
+        </form>
+        <p class="info">Note: Click karne ke baad background me processing start ho jayegi.</p>
+    </div>
+</body>
+</html>
+"""
 
 @app.route('/')
 def home():
-    return "Meesho Automation Bot is Running Live!"
+    # Jab aap link par click karenge toh yeh HTML Form dikhega
+    return render_template_string(HTML_TEMPLATE)
 
-@app.route('/run', methods=['POST'])
+@app.route('/run-automation', methods=['POST'])
 def run_bot():
-    data = request.get_json()
-    username = data.get("username")
-    password = data.get("password")
+    username = request.form.get("username")
+    password = request.form.get("password")
     
     if not username or not password:
-        return jsonify({"status": "failed", "message": "Missing credentials"}), 400
+        return "<h3>Error: Username or Password cannot be empty!</h3><a href='/'>Go Back</a>"
         
+    # Automation trigger hoga
     result = open_meesho_seller(username, password)
-    return jsonify({"status": "done", "message": result})
+    
+    if "Error" in result:
+        return f"<h3>Automation Failed!</h3><p>{result}</p><a href='/'>Try Again</a>"
+    return f"<h3>Success!</h3><p>{result}</p><a href='/'>Go Back</a>"
 
 if __name__ == "__main__":
-    # Render dynamic PORT use karta hai
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
